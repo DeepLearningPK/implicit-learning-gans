@@ -53,6 +53,11 @@ def generate_Z_from_noise(genZ_params, num_samples, noise_dimZ, rs):
   samples = neural_net_predict_genZ(genZ_params, noiseZ)
   return sigmoid(samples)
 
+
+  # (5) Define a neural network
+  # Here, we define a neural network with only numpy functions
+  # Each hidden layer consists of matrix multiplication,
+  # batch normalization, and leaky relu.
 def neural_net_predict_genX(params, inputs):
   """Params is a list of (weights, bias) tuples.
      inputs is an (N x D) matrix."""
@@ -144,6 +149,20 @@ def igp_objective(genX_params, genZ_params, real_z, num_samples, noise_dimX, noi
   
   return np.sum((fake_data - igp_data)**2) / num_samples
 
+  # (6) Define wasserstein gradient penalty
+  # 
+  # A good way to implement a wasserstein gan is by
+  # regularizing the gradient of the loss function to be k everywhere
+  # This enforces the loss function to be k-lipschitz.
+  #
+  # Here, I query the loss function gradient at a random point
+  # between the real observed data and the fake generated data,
+  # and I induce a loss when the gradient is larger than K.
+  #
+  # The original paper proves that requiring the gradient to be
+  # exactly K everywhere is suitable for learning, but in practice
+  # I observe that loosening the penalty by only 
+  # requiring k-lipschitz, gradient at most K, works better.
 def wasserstein_lipschitz_objective(genX_params, genZ_params, dsc_params, real_data, num_samples, noise_dimZ, noise_dimX, grad_dsc, wasserstein_lambda, rs):
   fake_z = generate_Z_from_noise(genZ_params, num_samples, noise_dimZ, rs)
   noiseX = rs.randn(num_samples, noise_dimX)
@@ -154,9 +173,14 @@ def wasserstein_lipschitz_objective(genX_params, genZ_params, dsc_params, real_d
   K_LIPSCHITZ = 10
   for i in range(num_samples):
     eps = rs.uniform()
+    # Find a point x_hat between the 
+    # fake datapoint and real datapoint
     x_hat = eps * real_data[i] + (1 - eps) * fake_data[i]
+
+    # Find the gradient of the discriminator at x_hat
     gxh = grad_dsc(x_hat, dsc_params)
     norm = np.sqrt(sum(gxh ** 2))
+    # If the norm of the gradient is above k, increase loss.
     wasserstein_loss += (max(norm, K_LIPSCHITZ) - K_LIPSCHITZ)**2
     # wasserstein_loss += (norm - 1)**2
   wasserstein_loss /= num_samples
@@ -358,6 +382,21 @@ def import_ganZ_gen_params(gp_fold, iter_nm):
 ### Setup and run ###
 
 if __name__ == '__main__':
+  #
+  # (1) Start running code. 
+  # In this project, I train two GANs to transform
+  # 
+  #       noise -> latent z -> observed x
+  # 
+  # This script trains the second GAN, mapping Z to X.
+  # In this section, we:
+  #   Read in data
+  #   Read in trained parameters for the firstGAN
+  #   Assert hyperparameter values
+  #   Initialize the generative and discriminative neural nets 
+  #   Define the objective and take its gradient
+  #   Run optimization
+  # 
   out_place = '/cluster/mshen/prj/gans/out/2017-06-19/d_gan/'
   num_folds = count_num_folders(out_place)
   out_dir = out_place + alphabetize(num_folds + 1) + '/'
@@ -411,7 +450,14 @@ if __name__ == '__main__':
     idx = iter % num_batches
     return slice(idx * batch_size, (idx+1) * batch_size)
 
-  # Define training objective
+  #
+  # (2) Define training objective
+  # 
+  # In this function, we combine the
+  #   a. reconstruction loss, wgan_objective
+  #   b. copying loss, igp_objective
+  #   c. wasserstein lipschitz objective, the gradient penalty
+  # 
   seed = npr.RandomState(1)
   def objective(genX_params, dsc_params, iter):
     idx = batch_indices(iter)
@@ -440,7 +486,21 @@ if __name__ == '__main__':
       return 1, max(10 - (300 - iter)/200, 0.01)
     return c1, c2
 
-  # Get gradients of objective using autograd.
+  # 
+  # (3) Get gradients of objective using autograd.
+  # 
+  # With this single line, we take the gradient of
+  # the defined objective function from step (2).
+  #
+  # The object both_objective_grad returns the gradient
+  # of the function at the location of its inputs.
+  # 
+  # The multigrad function is directly imported from autograd
+  # as such: from autograd import multigrad
+  # 
+  # Multigrad gets the gradient with respect to arguments 0 and 1
+  # which is the discriminator network parameters and the
+  # generative network parameters.
   both_objective_grad = multigrad(objective, argnums=[0,1])
 
   print("   Iter | Objective | Fake score | Real score | Copy score | Lipschitz Score")
@@ -478,6 +538,9 @@ if __name__ == '__main__':
     return None
 
   # The optimizers provided can optimize lists, tuples, or dicts of parameters.
+  # 
+  # (4) Start optimization
+  # 
   optimized_params = adam_minimax(both_objective_grad,
                                   init_genX_params, init_dsc_params,
                                   step_size_max=step_size_max, step_size_min=step_size_min,
